@@ -130,6 +130,10 @@ int esp8266_tencent_firmware_module_mqtt_state_get(mqtt_state_t *state)
     }
 
     str = strstr(echo.buffer, "+TCMQTTSTATE:");
+    if (!str) 
+    {
+        return -1;
+    }
     sscanf(str, "+TCMQTTSTATE:%d", &ret_state);
     if (ret_state == 0) {
         *state = MQTT_STATE_DISCONNECTED;
@@ -345,8 +349,7 @@ static int esp8266_tencent_firmware_ota_read_fwdata(uint8_t *ota_fw_data_buffer,
     return tos_chr_fifo_pop_stream(&ota_fw_data_chr_fifo, ota_fw_data_buffer, read_len);
 }
 
-__STATIC__ uint8_t topic_buffer[64];
-__STATIC__ uint8_t payload_buffer[64];
+static mqtt_message_t mqtt_message;
 
 void esp8266_tencent_firmware_recvpub(void)
 {
@@ -357,6 +360,8 @@ void esp8266_tencent_firmware_recvpub(void)
     uint8_t data;
     int read_len = 0, payload_len = 0;
 
+    memset(&mqtt_message, 0, sizeof(mqtt_message));
+
     while (1) {
         if (tos_at_uart_read(&data, 1) != 1) {
             return;
@@ -366,14 +371,14 @@ void esp8266_tencent_firmware_recvpub(void)
         } else if (data == ',') {
             break;
         }
-        if (read_len < sizeof(topic_buffer)) {
-            topic_buffer[read_len++] = data;
+        if (read_len < sizeof(mqtt_message.topic)) {
+            mqtt_message.topic[read_len++] = data;
         }
     }
-    if (read_len == sizeof(topic_buffer)) {
-        topic_buffer[read_len - 1] = '\0';
+    if (read_len == sizeof(mqtt_message.topic)) {
+        mqtt_message.topic[read_len - 1] = '\0';
     } else {
-        topic_buffer[read_len] = '\0';
+        mqtt_message.topic[read_len] = '\0';
     }
 
     while (1) {
@@ -386,17 +391,16 @@ void esp8266_tencent_firmware_recvpub(void)
         payload_len = payload_len * 10 + (data - '0');
     }
 
-    if (payload_len > sizeof(payload_buffer)) {
-        payload_len = sizeof(payload_buffer);
+    if (payload_len > sizeof(mqtt_message.payload)) {
+        payload_len = sizeof(mqtt_message.payload);
     }
 
-    read_len = tos_at_uart_read(payload_buffer, payload_len + 2);
+    read_len = tos_at_uart_read((uint8_t*)mqtt_message.payload, payload_len + 2);
     if (read_len != payload_len + 2) {
         return;
     }
 
-    printf("topic received: %s\n", topic_buffer);
-    printf("payload: %s\n", payload_buffer);
+    tos_mail_q_post(&mqtt_message_mail, &mqtt_message, sizeof(mqtt_message_t));
 }
 
 void esp8266_tencent_firmware_recvcmd(void)
@@ -483,6 +487,8 @@ tencent_firmware_module_t tencent_firmware_module_esp8266 = {
 
 int esp8266_tencent_firmware_sal_init(hal_uart_port_t uart_port)
 {
+    int ret = -1;
+    
     if (tos_at_init(uart_port, esp8266_tencent_firmware_at_event,
                         sizeof(esp8266_tencent_firmware_at_event) /
                         sizeof(esp8266_tencent_firmware_at_event[0])) != 0) {
@@ -493,8 +499,8 @@ int esp8266_tencent_firmware_sal_init(hal_uart_port_t uart_port)
         return -1;
     }
 
-    if (tos_tf_module_init() != 0) {
-        return -1;
+    if ((ret = tos_tf_module_init()) != 0) {
+        return ret;
     }
 
     return 0;
